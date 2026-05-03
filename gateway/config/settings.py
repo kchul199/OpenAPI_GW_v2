@@ -1,0 +1,96 @@
+"""
+Gateway configuration system using Pydantic Settings.
+Supports loading from environment variables and .env files.
+"""
+from __future__ import annotations
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ServerSettings(BaseSettings):
+    host: str = "0.0.0.0"
+    port: int = 8080
+    grpc_port: int = 9090
+    workers: int = 1
+    reload: bool = False
+    access_log: bool = True
+    # TLS
+    tls_enabled: bool = False
+    tls_cert_file: str = ""
+    tls_key_file: str = ""
+
+
+class RedisSettings(BaseSettings):
+    url: str = "redis://localhost:6379/0"
+    cluster_mode: bool = False
+    max_connections: int = 100
+    socket_timeout: float = 5.0
+    socket_connect_timeout: float = 2.0
+
+
+class ObservabilitySettings(BaseSettings):
+    # Tracing
+    tracing_enabled: bool = True
+    otel_exporter_endpoint: str = "http://localhost:4317"
+    service_name: str = "open-api-gateway"
+    # Metrics
+    metrics_enabled: bool = True
+    metrics_path: str = "/metrics"
+    # Logging
+    log_level: str = "INFO"
+    log_format: str = "json"  # json | text
+
+
+class AdminSettings(BaseSettings):
+    host: str = "0.0.0.0"
+    port: int = 9000
+    api_key: str = Field(default="changeme-admin-key", description="Admin API 접근 키")
+    read_api_keys: str = Field(default="", description="쉼표 구분 read 전용 API 키 목록")
+    write_api_keys: str = Field(default="", description="쉼표 구분 write API 키 목록")
+    allowed_ips: str = Field(
+        default="",
+        description="쉼표 구분 허용 IP/CIDR 목록(비우면 전체 허용)",
+    )
+    trust_proxy_headers: bool = Field(
+        default=True,
+        description="X-Forwarded-For 헤더를 신뢰할지 여부",
+    )
+    max_write_actions_per_minute: int = Field(
+        default=120,
+        description="관리 write 액션 분당 허용 수(0 이하이면 제한 비활성)",
+    )
+    default_key_ttl_seconds: int = Field(
+        default=0,
+        description="회전 키 기본 만료 시간(초, 0이면 만료 없음)",
+    )
+    key_store_file: str = "config/admin_keys.json"
+    audit_log_file: str = "logs/admin_audit.log"
+    route_history_file: str = "config/route_history.json"
+    route_history_max_entries: int = 300
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+        case_sensitive=False,
+    )
+
+    app_name: str = "Open API Gateway"
+    environment: str = "development"  # development | staging | production
+    debug: bool = False
+
+    # Routes config file path
+    routes_config: str = "config/routes.yaml"
+    gateway_config: str = "config/gateway.yaml"
+
+    server: ServerSettings = Field(default_factory=ServerSettings)
+    redis: RedisSettings = Field(default_factory=RedisSettings)
+    observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    admin: AdminSettings = Field(default_factory=AdminSettings)
+
+
+# Singleton
+settings = Settings()

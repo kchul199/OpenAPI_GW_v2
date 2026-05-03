@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.venv/
+.env
+.env.local
+.runtime/
+.DS_Store
+*.swp
+*.swo

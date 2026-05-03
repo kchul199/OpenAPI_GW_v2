@@ -1,0 +1,151 @@
+services:
+  # ── API Gateway ─────────────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    container_name: oag-gateway
+    ports:
+      - "8080:8080"   # HTTP / WebSocket
+      - "9090:9090"   # gRPC
+    env_file:
+      - ../.env.local
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - DEBUG=${DEBUG:-true}
+      - WORKERS=${WORKERS:-4}
+      - SERVER__PORT=8080
+      - SERVER__GRPC_PORT=9090
+      - REDIS__URL=redis://redis:6379/0
+      - OBSERVABILITY__LOG_LEVEL=${OBSERVABILITY__LOG_LEVEL:-INFO}
+      - OBSERVABILITY__LOG_FORMAT=${OBSERVABILITY__LOG_FORMAT:-json}
+      - ROUTES_CONFIG=/app/config/routes.yaml
+      - GATEWAY_CONFIG=/app/config/gateway.yaml
+      - OAG_USER_JWT_SECRET=${OAG_USER_JWT_SECRET:-dev-user-jwt-secret}
+      - OAG_CHAT_JWT_SECRET=${OAG_CHAT_JWT_SECRET:-dev-chat-jwt-secret}
+      - OAG_ORDER_API_KEY_1=${OAG_ORDER_API_KEY_1:-sk-test-key-12345678}
+      - OAG_ORDER_API_KEY_2=${OAG_ORDER_API_KEY_2:-sk-prod-key-87654321}
+    volumes:
+      - ../config:/app/config:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - oag-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/_health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Admin API ────────────────────────────────────────────────────────────────
+  admin:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    container_name: oag-admin
+    command: ["uvicorn", "admin.main:app", "--host", "0.0.0.0", "--port", "9000"]
+    ports:
+      - "9000:9000"
+    env_file:
+      - ../.env.local
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - ADMIN__API_KEY=${ADMIN_API_KEY:-changeme-admin-key}
+      - ADMIN__READ_API_KEYS=${ADMIN_READ_API_KEYS:-}
+      - ADMIN__WRITE_API_KEYS=${ADMIN_WRITE_API_KEYS:-}
+      - ADMIN__ALLOWED_IPS=${ADMIN_ALLOWED_IPS:-}
+      - ADMIN__TRUST_PROXY_HEADERS=${ADMIN_TRUST_PROXY_HEADERS:-true}
+      - ADMIN__MAX_WRITE_ACTIONS_PER_MINUTE=${ADMIN_MAX_WRITE_ACTIONS_PER_MINUTE:-120}
+      - ADMIN__DEFAULT_KEY_TTL_SECONDS=${ADMIN_DEFAULT_KEY_TTL_SECONDS:-0}
+      - ADMIN__KEY_STORE_FILE=/app/runtime/admin_keys.json
+      - ADMIN__AUDIT_LOG_FILE=/app/runtime/admin_audit.log
+      - ADMIN__ROUTE_HISTORY_FILE=/app/runtime/route_history.json
+      - REDIS__URL=redis://redis:6379/0
+      - ROUTES_CONFIG=/app/config/routes.yaml
+      - GATEWAY_CONFIG=/app/config/gateway.yaml
+      - OAG_USER_JWT_SECRET=${OAG_USER_JWT_SECRET:-dev-user-jwt-secret}
+      - OAG_CHAT_JWT_SECRET=${OAG_CHAT_JWT_SECRET:-dev-chat-jwt-secret}
+      - OAG_ORDER_API_KEY_1=${OAG_ORDER_API_KEY_1:-sk-test-key-12345678}
+      - OAG_ORDER_API_KEY_2=${OAG_ORDER_API_KEY_2:-sk-prod-key-87654321}
+    volumes:
+      - ../config:/app/config:ro
+      - ../.runtime:/app/runtime:rw
+    depends_on:
+      - redis
+    networks:
+      - oag-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/_health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Redis ─────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: oag-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - oag-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Mock upstream service (for testing) ──────────────────────────────────────
+  mock-upstream:
+    image: ealen/echo-server:latest
+    container_name: oag-mock-upstream
+    environment:
+      - PORT=8000
+    ports:
+      - "8000:8000"
+    networks:
+      - oag-net
+
+  # ── Prometheus ───────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: oag-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus-alerts.yaml:/etc/prometheus/rules/prometheus-alerts.yaml:ro
+    networks:
+      - oag-net
+    restart: unless-stopped
+
+  # ── Grafana ──────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: oag-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - oag-net
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  grafana-data:
+
+networks:
+  oag-net:
+    driver: bridge
