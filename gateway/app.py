@@ -14,7 +14,8 @@ from fastapi import FastAPI, Request, Response, WebSocket
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 
-from gateway.config import ConfigLoader, settings
+from gateway.config.loader import ConfigLoader
+from gateway.config.settings import settings
 from gateway.config.watcher import ConfigFileWatcher
 from gateway.core.context import GatewayContext
 from gateway.core.pipeline import MiddlewarePipeline

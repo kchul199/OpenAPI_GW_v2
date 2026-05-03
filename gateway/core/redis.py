@@ -11,7 +11,7 @@ from typing import cast
 from redis.asyncio import Redis, from_url
 from redis.asyncio.cluster import RedisCluster
 
-from gateway.config import settings
+from gateway.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

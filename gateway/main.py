@@ -9,7 +9,7 @@ import logging
 import uvicorn
 
 from gateway.app import create_app
-from gateway.config import settings
+from gateway.config.settings import settings
 from gateway.observability.logging import configure_logging
 
 configure_logging(level=settings.observability.log_level, fmt=settings.observability.log_format)

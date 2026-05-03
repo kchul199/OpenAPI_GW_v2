@@ -2,13 +2,11 @@
 Circuit Breaker Plugin.
 Wraps upstream calls in a circuit breaker state machine.
 
-Current implementation: 2-state (CLOSED ↔ OPEN) via Redis TTL.
-  CLOSED → (failure_threshold failures in window_seconds) → OPEN
-  OPEN   → (recovery_timeout expires) → CLOSED (automatic)
-
-Tech Debt: HALF_OPEN probe state not yet implemented.
-  Full 3-state (CLOSED → OPEN → HALF_OPEN → CLOSED/OPEN) is tracked
-  as a future improvement. See workfoot.md §Tech Debt.
+Implementation: 3-state (CLOSED → OPEN → HALF_OPEN → CLOSED/OPEN)
+  CLOSED    → (failure_threshold failures in window_seconds) → OPEN
+  OPEN      → (recovery_timeout expires) → HALF_OPEN
+  HALF_OPEN → (1 probe request success) → CLOSED
+  HALF_OPEN → (1 probe request failure) → OPEN
 
 Config keys:
   failure_threshold  (int)   : failures within window to open circuit (default: 5)
@@ -50,6 +48,7 @@ class CircuitBreakerPlugin(BasePlugin):
 
         open_key = f"cb:open:{route_id}"
         fails_key = f"cb:fails:{route_id}"
+        half_open_key = f"cb:half_open:{route_id}"
 
         # 1. Check if Circuit is OPEN globally
         is_open = await redis.exists(open_key)
@@ -66,20 +65,66 @@ class CircuitBreakerPlugin(BasePlugin):
                 headers={"Retry-After": str(max(ttl, 1))},
             )
 
-        # 2. Proceed with call
+        # 2. Check for HALF_OPEN probe
+        # If the fails_key exists and is >= threshold, but open_key is gone,
+        # it means we were OPEN and now we are ready to probe.
+        current_fails_str = await redis.get(fails_key)
+        current_fails = int(current_fails_str) if current_fails_str else 0
+
+        is_probing = False
+        if current_fails >= self._failure_threshold:
+            # Try to acquire probe lock for HALF_OPEN
+            # Use SET NX to ensure only one worker probes
+            acquired = await redis.set(half_open_key, "1", nx=True, ex=10)
+            if acquired:
+                is_probing = True
+                logger.info(f"Circuit HALF_OPEN: Probing route={route_id}", extra={"request_id": ctx.request_id})
+            else:
+                # Someone else is probing, block this request
+                return Response(
+                    content='{"detail":"Service recovery in progress (half-open probe)"}',
+                    status_code=503,
+                    media_type="application/json",
+                    headers={"Retry-After": "5"},
+                )
+
+        # 3. Proceed with call
         try:
             response: Response = await next(request, ctx)
+            
             if response.status_code >= 500:
-                await self._record_failure(redis, route_id, open_key, fails_key)
+                await self._handle_failure(redis, route_id, open_key, fails_key, half_open_key, is_probing)
             else:
-                # Optionally reset failures on success. For a simple sliding behavior,
-                # we just let the fails_key expire automatically over window_seconds.
-                pass
+                if is_probing:
+                    # Success! Reset circuit
+                    await redis.delete(fails_key)
+                    await redis.delete(half_open_key)
+                    logger.info(f"Circuit CLOSED: Route={route_id} recovered successfully.")
+                elif current_fails > 0:
+                    # Optional: gradual success threshold could be implemented here
+                    pass
             return response
         except Exception:
-            # On exception (e.g. connection error), record failure
-            await self._record_failure(redis, route_id, open_key, fails_key)
+            await self._handle_failure(redis, route_id, open_key, fails_key, half_open_key, is_probing)
             raise
+
+    async def _handle_failure(
+        self,
+        redis: RedisClient,
+        route_id: str,
+        open_key: str,
+        fails_key: str,
+        half_open_key: str,
+        is_probing: bool
+    ) -> None:
+        if is_probing:
+            # Probe failed! Immediately re-open the circuit
+            await redis.set(open_key, "1", ex=int(self._recovery_timeout))
+            await redis.delete(half_open_key)
+            logger.error(f"Circuit HALF_OPEN probe FAILED for route={route_id}. Re-opening for {self._recovery_timeout}s.")
+        else:
+            # Normal failure recording
+            await self._record_failure(redis, route_id, open_key, fails_key)
 
     async def _record_failure(
         self,
@@ -96,10 +141,7 @@ class CircuitBreakerPlugin(BasePlugin):
 
         if current_fails >= self._failure_threshold:
             # Trip the circuit!
-            # Set the open_key with recovery_timeout
             await redis.set(open_key, "1", ex=int(self._recovery_timeout))
-            # Clear or leave the fails_key to block further processing
-            await redis.delete(fails_key)
             logger.error(
                 f"Circuit breached for route={route_id}! Opening circuit for {self._recovery_timeout}s."
             )
